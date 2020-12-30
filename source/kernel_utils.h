@@ -1,8 +1,19 @@
 #ifndef KERNEL_UTILS_H
 #define KERNEL_UTILS_H
 
+#ifdef __cplusplus 
+extern "C" {
+
+#else
+
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#endif
+
 #include "fw_defines.h"
-#include "ps4.h"
+//#include "ps4.h"
 
 #define printf_notification(...)                       \
   do {                                                 \
@@ -75,3 +86,9 @@ uint64_t get_fw_version(void);
 int jailbreak(uint64_t fw_version);
 
 #endif
+
+
+#ifdef __cplusplus 
+}
+#endif
+

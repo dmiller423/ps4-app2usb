@@ -1,32 +1,62 @@
-LIBPS4	:= $(PS4SDK)/libPS4
+TOOLCHAIN   := $(OO_PS4_TOOLCHAIN)
+PROJNAME    := $(shell basename $(CURDIR))
+#$(notdir $(shell pwd)) 
+INTDIR      := $(CURDIR)/build
+SRCDIR		:= $(CURDIR)/source
+IMGUIDIR	:= $(SRCDIR)/imgui
+UISRCDIR	:= $(SRCDIR)/ui
 
-CC	:= gcc
-OBJCOPY	:= objcopy
-ODIR	:= build
-SDIR	:= source
-IDIRS	:= -I$(LIBPS4)/include -Iinclude
-LDIRS	:= -L$(LIBPS4)
-MAPFILE := $(shell basename $(CURDIR)).map
-CFLAGS	:= $(IDIRS) -Os -std=gnu11 -ffunction-sections -fdata-sections -fno-builtin -nostartfiles -nostdlib -Wall -masm=intel -march=btver2 -mtune=btver2 -m64 -mabi=sysv -mcmodel=small -fpie
-LFLAGS	:= $(LDIRS) -Xlinker -T $(LIBPS4)/linker.x -Xlinker -Map=$(MAPFILE) -Wl,--build-id=none -Wl,--gc-sections
-CFILES	:= $(wildcard $(SDIR)/*.c)
-SFILES	:= $(wildcard $(SDIR)/*.s)
-OBJS	:= $(patsubst $(SDIR)/%.c, $(ODIR)/%.o, $(CFILES)) $(patsubst $(SDIR)/%.s, $(ODIR)/%.o, $(SFILES))
+# Libraries linked into the ELF.
+LIBS        := -lc -lkernel -lc++ -lSceVideoOut -lSceUserService -lScePad
 
-LIBS	:= -lPS4
+# Compiler options. You likely won't need to touch these.
+UNAME_S     := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+		CC      := clang++
+		LD      := ld.lld
+		CDIR    := linux
+endif
+ifeq ($(UNAME_S),Darwin)
+		CC      := /usr/local/opt/llvm/bin/clang++
+		LD      := /usr/local/opt/llvm/bin/ld.lld
+		CDIR    := macos
+endif
+ODIR        := $(INTDIR)
+SDIR        := $(SRCDIR)
+IDIRS       := -I$(TOOLCHAIN)/include -I$(TOOLCHAIN)/include/c++/v1
+LDIRS       := -L$(TOOLCHAIN)/lib
+## this is annoying at best, why i was using -Xclang, need some frontend opts like cpu/tune/avx2/bmi
+CFLAGS      := -cc1 -O2 -triple x86_64-pc-freebsd-elf -munwind-tables $(IDIRS) -fuse-init-array -debug-info-kind=limited -debugger-tuning=gdb -emit-obj -D_OO_
+LFLAGS      := -O2 -m elf_x86_64 -pie --script $(TOOLCHAIN)/link.x --eh-frame-hdr $(LDIRS) $(LIBS) $(TOOLCHAIN)/lib/crt1.o
 
-TARGET = $(shell basename $(CURDIR)).bin
+CFILES      := $(wildcard $(SDIR)/*.c)
+CPPFILES    := $(wildcard $(SDIR)/*.cpp)
+UISRCFILES  := $(wildcard $(UISRCDIR)/*.cpp)
+IMGUIFILES  := $(wildcard $(IMGUIDIR)/*.cpp)
+OBJS        := $(patsubst $(SDIR)/%.c, $(ODIR)/%.o, $(CFILES)) $(patsubst $(SDIR)/%.cpp, $(ODIR)/%.o, $(CPPFILES)) $(patsubst $(IMGUIDIR)/%.cpp, $(ODIR)/%.o, $(IMGUIFILES)) $(patsubst $(UISRCDIR)/%.cpp, $(ODIR)/%.o, $(UISRCFILES))
 
+TARGET = eboot.bin
+
+# Create the intermediate directory incase it doesn't already exist.
+_unused := $(shell mkdir -p $(INTDIR))
+
+# Make rules
 $(TARGET): $(ODIR) $(OBJS)
-	$(CC) $(LIBPS4)/crt0.s $(ODIR)/*.o -o temp.t $(CFLAGS) $(LFLAGS) $(LIBS)
-	$(OBJCOPY) -O binary temp.t $(TARGET)
-	rm -f temp.t
+	$(LD) $(ODIR)/*.o -o $(ODIR)/$(PROJNAME).elf $(LFLAGS)
+	$(TOOLCHAIN)/bin/$(CDIR)/create-eboot -in=$(ODIR)/$(PROJNAME).elf -out=$(ODIR)/$(PROJNAME).oelf --paid 0x3800000000000011
 
 $(ODIR)/%.o: $(SDIR)/%.c
-	$(CC) -c -o $@ $< $(CFLAGS)
+	$(CC) $(CFLAGS) -o $@ $<
 
-$(ODIR)/%.o: $(SDIR)/%.s
-	$(CC) -c -o $@ $< $(CFLAGS)
+$(ODIR)/%.o: $(SDIR)/%.cpp
+	$(CC) $(CFLAGS) -o $@ $<
+
+$(ODIR)/%.o: $(UISRCDIR)/%.cpp
+	$(CC) $(CFLAGS) -o $@ $<
+
+
+$(ODIR)/%.o: $(IMGUIDIR)/%.cpp
+	$(CC) $(CFLAGS) -o $@ $<
 
 $(ODIR):
 	@mkdir $@
@@ -34,4 +64,5 @@ $(ODIR):
 .PHONY: clean
 
 clean:
-	rm -rf $(TARGET) $(MAPFILE) $(ODIR)
+	echo "project name $(PROJNAME), imgui dir $(IMGUIDIR) ;; files $(IMGUIFILES)"
+	rm -f $(TARGET) $(ODIR)/*

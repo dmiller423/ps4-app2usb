@@ -1,5 +1,7 @@
 #include "kernel_utils.h"
 
+#include <sys/mman.h>
+
 #define X86_CR0_WP (1 << 16)
 
 static inline __attribute__((always_inline)) uint64_t __readmsr(unsigned long __register) {
@@ -26,6 +28,12 @@ static inline __attribute__((always_inline)) void writeCr0(uint64_t cr0) {
                    : "r"(cr0)
                    : "memory");
 }
+
+int kexec(void* fn, void* arg1)
+{
+	return syscall(11,fn,arg1);
+}
+
 
 int kpayload_get_fw_version(struct thread *td, struct kpayload_get_fw_version_args *args) {
   void *kernel_base = 0;

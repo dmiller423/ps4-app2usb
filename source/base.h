@@ -25,6 +25,8 @@
 #include <string>
 #include <vector>
 
+#include <mutex>
+#include <thread>
 #include <atomic>
 
 using namespace std;
@@ -35,6 +37,7 @@ using namespace std;
 #include <orbis/Pad.h>
 
 
+#include <pthread.h>
 
 // base types
 
@@ -133,7 +136,18 @@ static void hexdump(u8 *pAddr, u32 psize, u32 cols = 16)
 }
 
 
+INLINE static string sizeStr(const size_t size) {
+	const static char* szPfx[]{ "B","KB","MB","GB","TB","PB" };
 
+	size_t ix = 0, sz = size;
+	while ( ((sz / 1024) / 1024 > 0) ||
+		   ((sz / 1024) > 0 && 0 == (sz % 1024)) ) {
+		++ix; sz /= 1024;
+	}
+	char buff[16];
+	sprintf(buff, "%4zu%3s", sz, szPfx[ix]);
+	return string(buff);
+}
 
 inline static bool strf(std::string *str, const char *fmt, ...)
 {

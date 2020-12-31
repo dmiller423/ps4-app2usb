@@ -50,6 +50,8 @@ class App2USB
 	string errorStr= string("no error");
 	StringList usbList;
 
+	mutex mtx;
+
 	App2USB() {
 		opList.reserve(1024);
 		if (!refreshList()) {
@@ -213,13 +215,26 @@ private:
 		return true;
 	}
 
+	static void* thrEntry(void* arg)
+	{
+		App2USB& app = Get();
+
+		if (app.mtx.try_lock()) {
+			if(!app.bakeMeAcake())
+				klog("Error, no cake for u!\n");
+			app.mtx.unlock();
+		}
+		else klog("thrEntry() failed to lock mutex!\n");
+		return nullptr;
+	}
+
 	// could spawn thread and check mtx locked var or atomic
 	bool bakeMeAcake()
 	{
 		vector<OPEntry*> selList;
 
-		if ((None==opType || FatalError==opType || PlsWait==opType) ||
-			((ToUSB==opType || ToHDD==opType) && !opTarget))
+		if ( (opType==None || opType==FatalError || PlsWait==opType) ||
+			((opType==ToUSB|| opType==ToHDD) && !opTarget))
 			return false;
 
 		if (ToUSB==opType || ToHDD==opType)
@@ -279,10 +294,6 @@ private:
 				continue;
 			}
 
-#if 1	// remove this after testing *FIXME*
-			StringList sl;
-			getEntries(srcApp,sl);
-#endif
 			string srcPkg = srcApp + "/app.pkg";
 			string dstPkg = dstApp + "/app.pkg";
 

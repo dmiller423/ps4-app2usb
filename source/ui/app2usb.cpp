@@ -19,11 +19,12 @@ atomic<u64> opNum{0}, progCurr{0}, progSize{0};
 
 void App2USB::render()
 {
+	static pthread_t opThread;
 
 	auto scaling = 1.0f;	// only used for spacing
 	u32 resW=VideoOut::Get().Width(), resH=VideoOut::Get().Height();
 
-	if (None!=opType) {
+	if (None!=opType) {		// will race for opType but should be ok 
 		bool confirmed=false;
 		ImGui::OpenPopup("Confirm");
 
@@ -34,7 +35,15 @@ void App2USB::render()
 			{
 				ImGui::Text("Please Wait");
 				ImGui::Text("");	// casts are ugly but c++ needs implicit or explicit cast to get a clue what's required here
-				ImGui::Text("Operation %ld:  Progress %ld%% (%ld/%ld)", u64(opNum), u64(100.f*double(u64(progCurr))/u64(progSize)), u64(progCurr), u64(progSize));
+				ImGui::Text("Operation %ld:  Progress %ld%% (%s/%s)", u64(opNum), u64(100.f*double(u64(progCurr))/u64(progSize)),
+							sizeStr(progCurr).c_str(), sizeStr(progSize).c_str());	//u64(progCurr), u64(progSize));
+
+				if (mtx.try_lock()) {
+					void* rv=nullptr;
+					pthread_join(opThread,&rv);
+					confirmed=true;
+					mtx.unlock();
+				}
 			}
 			else if (FatalError==opType)
 			{
@@ -53,10 +62,20 @@ void App2USB::render()
 				ImGui::SetNextWindowPos(ImVec2(280, 350));
 
 				if (ImGui::Button("YES")) {
-					if (!bakeMeAcake())
+#if 1
+					if (!!pthread_create(&opThread, nullptr, thrEntry, nullptr)) {
+						klog("Error, failed to create thread!\n");
+						opType=FatalError;
+					}
+					usleep(100);	// *FIXME* come up with better wai, split opType and uiType
+					opType=PlsWait;	
+					
+#else
+					if (!bakeMeAcake()) {
 						opType=FatalError;
 					else
 						confirmed=true;
+#endif
 				}
 
 				ImGui::SameLine(44);
@@ -86,30 +105,19 @@ void App2USB::render()
 	ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(22 * scaling, 10 * scaling));		// from 8, 4
 	ImGui::AlignTextToFramePadding();
 	ImGui::Text("\t-*-\tps4-app2usb\t-*- Use buttons to move single items or select [X] check boxes to move multiple. -*-");
-
-
-	ImGui::SameLine(ImGui::GetContentRegionAvailWidth() - 600);		ImGui::Text("Current USB Device: \"%s\" ", usbPath.c_str());
-	ImGui::SameLine(ImGui::GetContentRegionAvailWidth() - 300); //ImGui::CalcTextSize("Select USB Device").x - ImGui::GetStyle().FramePadding.x * 2.0f /*+ ImGui::GetStyle().ItemSpacing.x*/);
-
-	if (ImGui::Button("Change to Next USB Device")) {
+	ImGui::Text("\t-*-");
+	ImGui::SameLine(ImGui::GetContentRegionAvailWidth() - 500);		ImGui::Text("Current USB Device: \"%s\" ", usbPath.c_str());
+	ImGui::SameLine(ImGui::GetContentRegionAvailWidth() - 260); if (ImGui::Button("Change to Next USB Device")) {
 		usbIdx  = ++usbIdx % usbList.size();
 		usbPath = usbList[usbIdx];
 	}
 
 
 	ImGui::Text("\t-*-");
-	if (ImGui::Button("Move Selected to USB")) {
-		opType=SelToUSB;
-	}
-
-	ImGui::SameLine(220);
-	if (ImGui::Button("Move Selected to PS4 Console"))
-		opType=SelToHDD;
-
-	ImGui::Text("\t-*-");
-	ImGui::SameLine(140.f);	if(ImGui::Button("Select ALL"))   { for (auto& e : opList) { e.selected=true; }  }
-	ImGui::SameLine(280.f);	if(ImGui::Button("Deselect ALL")) { for (auto& e : opList) { e.selected=false; } }
-
+	ImGui::SameLine(140.f);	if (ImGui::Button("Select ALL"))   { for (auto& e : opList) { e.selected=true; }  }
+	ImGui::SameLine(280.f);	if (ImGui::Button("Deselect ALL")) { for (auto& e : opList) { e.selected=false; } }
+	ImGui::SameLine(520);	if (ImGui::Button("Move Selected to USB"))			{ opType=SelToUSB; }
+	ImGui::SameLine(640);	if (ImGui::Button("Move Selected to PS4 Console"))	{ opType=SelToHDD; }
 	ImGui::Text(" ");
 
 	{

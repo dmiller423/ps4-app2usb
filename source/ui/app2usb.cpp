@@ -62,7 +62,7 @@ void App2USB::render()
 				ImGui::SetNextWindowPos(ImVec2(280, 350));
 
 				if (ImGui::Button("YES")) {
-#if 1
+#if !defined(PLZ_NO_THREAD)
 					if (!!pthread_create(&opThread, nullptr, thrEntry, nullptr)) {
 						klog("Error, failed to create thread!\n");
 						opType=FatalError;
@@ -105,7 +105,6 @@ void App2USB::render()
 	ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(22 * scaling, 10 * scaling));		// from 8, 4
 	ImGui::AlignTextToFramePadding();
 	ImGui::Text("\t-*-\tps4-app2usb\t-*- Use buttons to move single items or select [X] check boxes to move multiple. -*-");
-	ImGui::Text("\t-*-");
 	ImGui::SameLine(ImGui::GetContentRegionAvailWidth() - 500);		ImGui::Text("Current USB Device: \"%s\" ", usbPath.c_str());
 	ImGui::SameLine(ImGui::GetContentRegionAvailWidth() - 260); if (ImGui::Button("Change to Next USB Device")) {
 		usbIdx  = ++usbIdx % usbList.size();
@@ -115,9 +114,9 @@ void App2USB::render()
 
 	ImGui::Text("\t-*-");
 	ImGui::SameLine(140.f);	if (ImGui::Button("Select ALL"))   { for (auto& e : opList) { e.selected=true; }  }
-	ImGui::SameLine(280.f);	if (ImGui::Button("Deselect ALL")) { for (auto& e : opList) { e.selected=false; } }
+	ImGui::SameLine(270.f);	if (ImGui::Button("Deselect ALL")) { for (auto& e : opList) { e.selected=false; } }
 	ImGui::SameLine(520);	if (ImGui::Button("Move Selected to USB"))			{ opType=SelToUSB; }
-	ImGui::SameLine(640);	if (ImGui::Button("Move Selected to PS4 Console"))	{ opType=SelToHDD; }
+	ImGui::SameLine(720);	if (ImGui::Button("Move Selected to PS4 Console"))	{ opType=SelToHDD; }
 	ImGui::Text(" ");
 
 	{
@@ -160,6 +159,215 @@ void App2USB::render()
 }
 
 
+	// could spawn thread and check mtx locked var or atomic
+	bool App2USB::bakeMeAcake()
+	{
+		vector<OPEntry*> selList;
+
+		if ( (opType==None || opType==FatalError || PlsWait==opType) ||
+			((opType==ToUSB|| opType==ToHDD) && !opTarget))
+			return false;
+
+		if (ToUSB==opType || ToHDD==opType)
+			selList.push_back(opTarget);
+		else {
+			for (auto& e : opList)
+				if (e.selected)
+					selList.push_back(&e);
+		}
+
+		if (!existsDir(usbPath)) {
+			klog("USB Mount point is invalid! usbPath \"%s\" \n", usbPath.c_str());
+			errorStr=string("USB Mount point is invalid! Did you remove it?");
+			return false;
+		}
+
+#if defined(_USE_LAME_PATHS_FOR_EXISTING_USBS)	// Don't bother, they used original package names from the json and that is 100% pointless: someone elses problem
+		string	pathUsbBase		(usbPath+"/PS4"),
+				pathUsbApp		(pathUsbBase+"/"),
+				pathUsbPatch	(pathUsbBase+"/updates"),
+				pathUsbAddCont	(pathUsbBase+"/dlc"),
+				pathUsbAppMeta	(usbBasePath+"/whotfknows_check_copyMeta()"),
+			;
+#else
+		string	pathUsbBase		(usbPath+"/app2usb"),
+				pathUsbApp		(pathUsbBase+"/app"),
+				pathUsbPatch	(pathUsbBase+"/patch"),
+				pathUsbAddCont	(pathUsbBase+"/addcont"),
+				pathUsbAppMeta	(pathUsbBase+"/appmeta")
+			;
+#endif
+		string	pathUserApp		("/user/app"),
+				pathUserPatch	("/user/patch"),
+				pathUserAddCont	("/user/addcont"),
+				pathUserAppMeta	("/user/appmeta")
+			;
+
+		bool toUSB = (ToUSB==opType || SelToUSB==opType);
+
+		for (const OPEntry* ent : selList) {
+
+			if (!ent || ent->path.empty()) return false;
+
+			klog("opNum[%zd] path: \"%s\" \n", u64(opNum++), ent->path.c_str());
+
+			// just remove toUSB/HOST and always switch?  people are stupid they'll prob get confused and wonder wtf is going on and keep swapping them until their brain falls out 
+			const string& srcTID = ent->tid;
+			const string& srcApp = ent->path;
+	
+			const string  dstApp = toUSB? string(pathUsbApp  + "/" + srcTID)
+										: string(pathUserApp + "/" + srcTID);
+
+
+			if (srcApp==dstApp || (toUSB && string::npos != srcApp.rfind("/mnt/usb"))) {
+				klog("@@@@@@@@@@ *FIXME* trying to copy to same place! src: \"%s\" , dst: \"%s\" \n", srcApp.c_str(), dstApp.c_str());
+				continue;
+			}
+
+			string srcPkg = srcApp + "/app.pkg";
+			string dstPkg = dstApp + "/app.pkg";
+
+
+			if (existsLink(srcPkg)) { klog(">>> src is symlink!\n"); continue; }	// shouldn't be in list, remove?
+			if (!toUSB && existsLink(dstPkg)) unlinkFile(dstPkg);
+
+
+			if (!existsFile(srcPkg)) {
+				opType=FatalError;
+				errorStr="Failed to find app pkg!";
+				klog("Error, find app pkg: \"%s\" ent{tid: \"%s\" , path: \"%s\"}\n", srcPkg.c_str(), ent->tid.c_str(), ent->path.c_str());
+				return false;
+			}
+
+			if (!existsDir(dstApp))
+				mkpath(dstApp,0700);
+		
+			if (!moveFile(srcPkg, dstPkg,0770)) {
+				opType=FatalError;
+				errorStr="Failed to move app pkg!";
+				klog("Error, move app pkg: \"%s\" \n", srcPkg.c_str());
+				return false;
+			}
+
+			if (toUSB && !linkFile(srcPkg, dstPkg))	{
+				opType=FatalError;
+				errorStr="Failed to link app pkg!";
+				klog("Error, link app pkg: \"%s\" \n", srcPkg.c_str());
+				return false;
+			}
+
+#if _WANT_PATCH_MOVED
+			{
+				const string  srcPatch = toUSB	? string(pathUserPatch + "/" + srcTID)
+												: string(pathUsbPatch  + "/" + srcTID);
+
+				const string  dstPatch = toUSB	? string(pathUsbPatch  + "/" + srcTID)
+												: string(pathUserPatch + "/" + srcTID);
+
+
+				srcPkg = srcPatch + "/patch.pkg";
+				dstPkg = dstPatch + "/patch.pkg";
+
+				if (existsFile(srcPkg))
+				{
+					if (!existsDir(dstPatch))
+						mkpath(dstPatch, 0700);
+
+					if (!moveFile(srcPkg, dstPkg, 0770)) {
+						opType=FatalError;
+						errorStr="Failed to move patch pkg!";
+						klog("Error, move patch pkg: \"%s\" \n", srcPkg.c_str());
+						return false;
+					}
+
+					if (toUSB && !linkFile(srcPkg, dstPkg))	{
+						opType=FatalError;
+						errorStr="Failed to link patch pkg!";
+						klog("Error, link patch pkg: \"%s\" \n", srcPkg.c_str());
+						return false;
+					}
+
+				}
+			}
+#endif
+
+#if _WANT_ADDCONT_MOVED
+			{
+				const string  srcAddCont = toUSB? string(pathUserAddCont + "/" + srcTID)
+												: string(pathUsbAddCont	 + "/" + srcTID);
+
+				const string  dstAddCont = toUSB? string(pathUsbAddCont  + "/" + srcTID)
+												: string(pathUserAddCont + "/" + srcTID);
+
+
+				srcPkg = srcAddCont + "/ac.pkg";
+				dstPkg = dstAddCont + "/ac.pkg";
+
+				if (existsFile(srcPkg))
+				{
+					if (!existsDir(dstAddCont))
+						mkpath(dstAddCont, 0700);
+
+					if (!moveFile(srcPkg, dstPkg, 0770)) {
+						opType=FatalError;
+						errorStr="Failed to move ac pkg!";
+						klog("Error, move ac pkg: \"%s\" \n", srcPkg.c_str());
+						return false;
+					}
+
+					if (toUSB && !linkFile(srcPkg, dstPkg))	{
+						opType=FatalError;
+						errorStr="Failed to link ac pkg!";
+						klog("Error, link ac pkg: \"%s\" \n", srcPkg.c_str());
+						return false;
+					}
+
+				}
+			}
+#endif
+
+#if 1 // _WANT_META_MOVED
+	// TODO check if any of this is even needed , almost sure the renamed xml isn't since i didn't use CID and it works fine...
+			if (toUSB)
+			{			
+				const string  srcAppMeta(pathUserAppMeta + "/" + srcTID);
+
+				StringList metaList;
+				if(getEntries(srcAppMeta, metaList)) {
+	
+					for (auto& me : metaList) {
+						string srcPath = srcAppMeta + "/" + me;
+						string dstPath = dstApp + "/" + me;
+	
+						if (me.npos!=me.rfind(".png") ||
+							me.npos!=me.rfind(".dds") ||
+							me.npos!=me.rfind(".at9"))
+						{
+							if (!copyFile(srcPath, dstPath, 0777)) {
+								opType=FatalError;
+								errorStr="Failed to copy meta file!";
+								klog("Error, copy meta file: \"%s\" \n", srcPath.c_str());
+								return false;
+							}
+						}
+					}
+				}
+				string cid=srcTID;	//getContentID(dstAppPkg);
+
+				if (!existsFile	(srcAppMeta + "/pronunciation.xml") ||
+					!copyFile	(srcAppMeta + "/pronunciation.xml", dstApp + "/" + cid + ".xml"))  {
+					opType=FatalError;
+					errorStr="Failed to copy meta pronunciation.xml!";
+					klog("Error, copy meta pronunciation.xml!");
+					return false;
+				}
+			}
+#endif
+		}	// for:
+		return true;
+	}
+
+
 
 bool App2USB::getEntries(const string& dir, StringList& entries, bool wantDots)
 {
@@ -169,7 +377,7 @@ bool App2USB::getEntries(const string& dir, StringList& entries, bool wantDots)
 	if (dir.empty())
 		return false;
 
-#if 1//def _DEBUG
+#if _DEBUG
 	klog("%s(\"%s\") \n", __func__, dir.c_str());
 #endif
 	int dfd = open(dir.c_str(), O_RDONLY | O_DIRECTORY);
@@ -192,7 +400,7 @@ bool App2USB::getEntries(const string& dir, StringList& entries, bool wantDots)
 				}
 				else {
 					entries.push_back(de->d_name);
-#if 1//def _DEBUG
+#if _DEBUG
 					u32 mode = _mode(string(dir + "/" + de->d_name).c_str());
 					klog("entry fileNo: 0x%08X , mode: %jo , name: \"%s\" \n", de->d_fileno, mode, de->d_name);
 #endif
@@ -264,80 +472,70 @@ bool App2USB::copyFile(const string& src, const string& dst, u32 perms)
 	if(!existsFile(src))
 		return false;
 
-	off_t size=0, actual=0;
+	off_t size=0;
 	vector<u8> fileBuff;
 
-	int fd = 0;
-	if ((fd=open(src.c_str(), O_RDONLY)) <= 0) {
-		klog("open(src): got fd %d , errno 0x%08X\n", fd, errno);
+	int fdr = 0;
+	if ((fdr=open(src.c_str(), O_RDONLY)) <= 0) {
+		klog("open(src): got fdr %d , errno 0x%08X\n", fdr, errno);
 		if (EACCES==errno)
 			errorStr=string("Access Denied !");
 
 		return false;
 	}
-	size = lseek(fd, 0, SEEK_END);
+	size = lseek(fdr, 0, SEEK_END);
 	klog("-src size: %ld bytes!\n", size);
-	lseek(fd, 0, SEEK_SET);
+	lseek(fdr, 0, SEEK_SET);
 	if (size < 0)
 		return false;
+
+
+	int fdw=0;
+	if ((fdw=open(dst.c_str(), O_WRONLY|O_CREAT, perms)) <= 0) {
+		klog("open(dst): got fdw %d , errno 0x%08X\n", fdw, errno);
+		if (EACCES==errno)
+			errorStr=string("Access Denied !");
+		close(fdr);
+		return false;
+	}
+
 
 	progCurr = 0;
 	progSize = size;
 
-	const u64 fileCopyMax=MB(128), fileChunkSize=MB(4);
+	const u64 fileCopyMax=MB(128), fileChunkSize=MB(32);
 
 	if (size<fileCopyMax) {
+		u64 actual=0;
 		fileBuff.resize(size);
-		if (size>0 && size!=(actual=read(fd, &fileBuff[0], size))) {
+		if (size>0 && size!=(actual=read(fdr, &fileBuff[0], size))) {
 			klog("@@ bad read , read %ld / %ld bytes : errno: 0x%08X\n", actual, size, errno);
 			return false;
 		}
-		progCurr = u64(progSize);
-	} else {
-		fileBuff.resize(fileChunkSize);
-		do { 
-			actual=read(fd, &fileBuff[0], fileChunkSize);
-			if (actual<fileChunkSize && ((progCurr+actual)!=progSize)) {
-				klog("@@ bad read , read %ld / %ld bytes : errno: 0x%08X\n", u64(progCurr), size, errno);
-				return false;
-			}
-			progCurr+=actual;
-		}
-		while(progCurr<progSize);
-	}
+		progCurr = u64(progSize/2);
 
-	close(fd);
-
-
-	if ((fd=open(dst.c_str(), O_WRONLY|O_CREAT, perms)) <= 0) {
-		klog("open(dst): got fd %d , errno 0x%08X\n", fd, errno);
-		if (EACCES==errno)
-			errorStr=string("Access Denied !");
-
-		return false;
-	}
-
-	progCurr = 0;
-	if (size<fileCopyMax) {
-		fileBuff.resize(size);
-		if (size>0 && size!=(actual=write(fd, &fileBuff[0], size))) {
+		if (size>0 && size!=(actual=write(fdw, &fileBuff[0], size))) {
 			klog("@@ bad write , wrote %ld / %ld bytes : errno: 0x%08X\n", actual, size, errno);
 			return false;
 		}
 		progCurr = u64(progSize);
 	} else {
+		u64 actr=0,actw=0;
 		fileBuff.resize(fileChunkSize);
 		do { 
-			actual=write(fd, &fileBuff[0], fileChunkSize);
-			if (actual<fileChunkSize && ((progCurr+actual)!=progSize)) {
-				klog("@@ bad read , wrote %ld / %ld bytes : errno: 0x%08X\n", u64(progCurr), size, errno);
+			actr=read (fdr, &fileBuff[0], fileChunkSize);
+			actw=write(fdw, &fileBuff[0], actr);
+			if (actr!=actw || (actw<fileChunkSize && ((progCurr+actw)!=progSize))) {
+				klog("@@ bad file IO at %ld / %ld bytes (r: %ld , w: %ld) : errno: 0x%08X\n", u64(progCurr), size, actr,actw, errno);
 				return false;
 			}
-			progCurr+=actual;
+			progCurr+=actw;
 		}
 		while(progCurr<progSize);
 	}
-	close(fd);
+
+	close(fdr);
+	close(fdw);
 
 
 	return true;
